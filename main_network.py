@@ -17,13 +17,10 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 # dataset_train = load_dataset("bookcorpus", split='train')
 
-max_iters = 5000
-eval_interval = 500
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-eval_iters = 200
 block_size = 256
-batch_size = 32
+batch_size = 4
 n_head = 7
 n_layer = 7
 n_embd = 400
@@ -42,23 +39,25 @@ cleaned_text = re.sub(r'Forename', 'Benzshawel', cleaned_text)
 if torch.cuda.is_available():
     torch.cuda.init()
 
-
 enc = tiktoken.get_encoding("cl100k_base")
 vocab_size = enc.n_vocab
 
 encode = lambda s: enc.encode(s)
 decode = lambda l: enc.decode(l)
 
+
 # encoded_data = torch.tensor(data, dtype=torch.long)
 
-#train and validation split
+# train and validation split
 # data = torch.tensor(data, dtype=torch.long)
-
 
 
 class CustomTextDataset(Dataset):
     def __init__(self, text):
         self.data = torch.tensor(encode(text), dtype=torch.long)
+
+        #         print(self.data.shape, self.data.dtype)
+        #         print(self.data[:100])
 
         n = int(0.9 * len(self.data))
 
@@ -68,19 +67,24 @@ class CustomTextDataset(Dataset):
         self.train_data = train_data
         self.val_data = val_data
 
-    def get_batch(self, split):
-        data = self.train_data if split == 'train' else self.val_data
-        ix = torch.randint(len(data) - block_size, (batch_size,))
-        x = torch.stack([data[i:i + block_size] for i in ix])
-        y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
-        # x, y = x.to(device), y.to(device)
-        return x, y
+    #     def get_batch(self, split):
+    #         data = self.train_data if split == 'train' else self.val_data
+
+    #         i = torch.randint(len(data) - block_size, (1,))
+    #         x = data[i:i + block_size]
+    #         y = data[i + 1:i + block_size + 1]
+
+    #         return x, y
 
     def __len__(self):
-        return len(self.data)
+        return len(self.data) // block_size
 
     def __getitem__(self, idx):
-        x, y = self.get_batch("train")
+        #         x, y = self.get_batch("train")
+
+        i = torch.randint(len(self.train_data) - block_size, (1,))
+        x = self.train_data[i:i + block_size]
+        y = self.train_data[i + 1:i + block_size + 1]
         return x, y
 
 
@@ -103,48 +107,19 @@ def train(gpu, args):
     torch.cuda.set_device(gpu)
     model.cuda(gpu)
 
-    #loss function
+    # loss function
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     train_dataset = CustomTextDataset(text)
 
-    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False,
+                                               num_workers=0, pin_memory=True)
 
     start = datetime.now()
-    # total_step = len(train_loader)
-
-    # making our own criterion
-    # @torch.no_grad()
-    # def estimate_loss():
-    #     out = {}
-    #     model.eval()
-    #
-    #     for split in ['train', 'val']:
-    #         losses = torch.zeros(eval_iters)
-    #         for k in range(eval_iters):
-    #             X, Y = get_batch(split, "text")
-    #             logits, loss = model(X, Y)  # <- Problem
-    #
-    #             # average the loss
-    #             if torch.cuda.device_count() > 1:
-    #                 temp_loss = torch.zeros(torch.cuda.device_count())
-    #                 for i in range(torch.cuda.device_count()):
-    #                     temp_loss[i] = loss[i].item()
-    #
-    #                 losses[k] = temp_loss.mean()
-    #             else:
-    #                 losses[k] = loss.item()
-    #         out[split] = losses.mean()
-    #     model.train()
-    #     return out
 
     total_step = len(train_loader)
     for epoch in range(args.epochs):
         for i, (xb, yb) in enumerate(train_loader):
-
-            # if epoch % eval_interval == 0:
-            #     losses = estimate_loss()
-            #     print(f"step {iteration}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
             xb = xb.cuda(non_blocking=True)
             yb = yb.cuda(non_blocking=True)
@@ -276,7 +251,6 @@ class BigramLanguageModel(nn.Module):
             idx_next = torch.multinomial(probs, num_samples=1)
             idx = torch.cat((idx, idx_next), dim=1)
         return idx
-
 
 
 if __name__ == '__main__':
