@@ -33,12 +33,14 @@ model_name = "temp"
 with open('inputs.txt', 'r', encoding='utf-8') as f:
     text = f.read()
 
-
 cleaned_text = [idx for idx in text if not re.findall("[^\u0000-\u05C0\u2100-\u214F]+", idx)]
 cleaned_text = "".join(cleaned_text)
 cleaned_text = re.sub(r'<(.*)>', 'Thomas', cleaned_text)
 cleaned_text = re.sub(r'Surname', 'Thomas', cleaned_text)
 cleaned_text = re.sub(r'Forename', 'Benzshawel', cleaned_text)
+
+if torch.cuda.is_available():
+    torch.cuda.init()
 
 
 enc = tiktoken.get_encoding("cl100k_base")
@@ -47,13 +49,38 @@ vocab_size = enc.n_vocab
 encode = lambda s: enc.encode(s)
 decode = lambda l: enc.decode(l)
 
-data = encode(text)
 # encoded_data = torch.tensor(data, dtype=torch.long)
 
 #train and validation split
-n = int(0.9*len(data))
-train_data = data[:n]
-val_data = data[n:]
+# data = torch.tensor(data, dtype=torch.long)
+
+
+
+class CustomTextDataset(Dataset):
+    def __init__(self, text):
+        self.data = torch.tensor(encode(text), dtype=torch.long)
+
+        n = int(0.9 * len(self.data))
+
+        train_data = self.data[:n]
+        val_data = self.data[n:]
+
+        self.train_data = train_data
+        self.val_data = val_data
+
+    def get_batch(self, split):
+        data = self.train_data if split == 'train' else self.val_data
+        ix = torch.randint(len(data) - block_size, (batch_size,))
+        x = torch.stack([data[i:i + block_size] for i in ix])
+        y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
+        # x, y = x.to(device), y.to(device)
+        return x, y
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        return self.get_batch("train", "text")
 
 
 def main():
@@ -76,79 +103,67 @@ def train(gpu, args):
     model.cuda(gpu)
 
     #loss function
-    criterion = nn.CrossEntropyLoss().cuda(gpu)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-    train_data = torch.tensor(data, dtype=torch.long)
+    train_dataset = CustomTextDataset(text)
 
-    train_loader = torch.utils.data.DataLoader(dataset=train_data, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
+    train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
 
     start = datetime.now()
-    total_step = len(train_loader)
+    # total_step = len(train_loader)
 
     # making our own criterion
-    @torch.no_grad()
-    def estimate_loss():
-        out = {}
-        model.eval()
+    # @torch.no_grad()
+    # def estimate_loss():
+    #     out = {}
+    #     model.eval()
+    #
+    #     for split in ['train', 'val']:
+    #         losses = torch.zeros(eval_iters)
+    #         for k in range(eval_iters):
+    #             X, Y = get_batch(split, "text")
+    #             logits, loss = model(X, Y)  # <- Problem
+    #
+    #             # average the loss
+    #             if torch.cuda.device_count() > 1:
+    #                 temp_loss = torch.zeros(torch.cuda.device_count())
+    #                 for i in range(torch.cuda.device_count()):
+    #                     temp_loss[i] = loss[i].item()
+    #
+    #                 losses[k] = temp_loss.mean()
+    #             else:
+    #                 losses[k] = loss.item()
+    #         out[split] = losses.mean()
+    #     model.train()
+    #     return out
 
-        for split in ['train', 'val']:
-            losses = torch.zeros(eval_iters)
-            for k in range(eval_iters):
-                X, Y = get_batch(split, "text")
-                logits, loss = model(X, Y)  # <- Problem
-
-                # average the loss
-                if torch.cuda.device_count() > 1:
-                    temp_loss = torch.zeros(torch.cuda.device_count())
-                    for i in range(torch.cuda.device_count()):
-                        temp_loss[i] = loss[i].item()
-
-                    losses[k] = temp_loss.mean()
-                else:
-                    losses[k] = loss.item()
-            out[split] = losses.mean()
-        model.train()
-        return out
-
+    total_step = len(train_loader)
     for epoch in range(args.epochs):
+        for i, (xb, yb) in enumerate(train_loader):
 
-        if iter % eval_interval == 0:
-            losses = estimate_loss()
-            print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+            # if epoch % eval_interval == 0:
+            #     losses = estimate_loss()
+            #     print(f"step {iteration}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-        xb, yb = get_batch('train', "text")
+            xb = xb.cuda(non_blocking=True)
+            yb = yb.cuda(non_blocking=True)
 
-        logits, loss = model(xb, yb)
-        loss = loss.mean()
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        optimizer.step()
+            logits, loss = model(xb, yb)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+
+            if (i + 1) % 100 == 0 and gpu == 0:
+                print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(
+                    epoch + 1,
+                    args.epochs,
+                    i + 1,
+                    total_step,
+                    loss.item())
+                )
+
     if gpu == 0:
         print('Training Complete in:', str(datetime.now() - start))
-
-with open('inputs.txt', 'r', encoding='utf-8') as f:
-    text = f.read()
-
-    cleaned_text = [idx for idx in text if not re.findall("[^\u0000-\u05C0\u2100-\u214F]+", idx)]
-    cleaned_text = "".join(cleaned_text)
-    cleaned_text = re.sub(r'<(.*)>', 'Thomas', cleaned_text)
-    cleaned_text = re.sub(r'Surname', 'Thomas', cleaned_text)
-    cleaned_text = re.sub(r'Forename', 'Benzshawel', cleaned_text)
-
-
-def get_batch(split, source):
-    if source == "text":
-        data = train_data if split == 'train' else val_data
-        ix = torch.randint(len(data) - block_size, (batch_size,))
-        x = torch.stack([data[i:i + block_size] for i in ix])
-        y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
-        x, y = x.to(device), y.to(device)
-    return x, y
-
-
-if torch.cuda.is_available():
-    torch.cuda.init()
 
 
 class Head(nn.Module):
