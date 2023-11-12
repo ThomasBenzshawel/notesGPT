@@ -9,11 +9,7 @@ import argparse
 import torch.multiprocessing as mp
 import torch
 import torch.distributed as dist
-from torch.distributed.fsdp import (FullyShardedDataParallel, CPUOffload,)
-
-# from datasets import load_dataset
-
-# dataset_train = load_dataset("bookcorpus", split='train')
+from torch.distributed.fsdp import (FullyShardedDataParallel, CPUOffload, )
 
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -42,13 +38,6 @@ vocab_size = enc.n_vocab
 
 encode = lambda s: enc.encode(s)
 decode = lambda l: enc.decode(l)
-
-
-# encoded_data = torch.tensor(data, dtype=torch.long)
-
-# train and validation split
-# data = torch.tensor(data, dtype=torch.long)
-
 
 class CustomTextDataset(Dataset):
     def __init__(self, text):
@@ -104,38 +93,40 @@ def main():
 
 
 def train(gpu, args):
-
-############################
+    ############################
 
     rank = args.nr * args.gpus + gpu
-    dist.init_process_group(backend='nccl', init_method='env://', world_size = args.world_size, rank=rank)
+    dist.init_process_group(backend='nccl', init_method='env://', world_size=args.world_size, rank=rank)
 
-############################
+    ############################
     model = BigramLanguageModel()
     torch.cuda.set_device(gpu)
     model.cuda(gpu)
 
-############################
+    # Sharding slows down training time,
+    #   uncomment below line and comment out everything under sharding tp speed up training
+    #     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+    ############################
 
     model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu], find_unused_parameters=True)
 
     ### Sharding
     model = FullyShardedDataParallel(model, cpu_offload=CPUOffload(offload_params=True))
 
-    # loss function
+    # loss function sharding
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-############################
-
+    ############################
 
     train_dataset = CustomTextDataset(text)
 
+    ############################
 
-############################
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=args.world_size,
+                                                                    rank=rank)
 
-    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=args.world_size, rank=rank)
-
-############################
+    ############################
 
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False,
                                                num_workers=0, pin_memory=True, sampler=train_sampler)
