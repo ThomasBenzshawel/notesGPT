@@ -9,6 +9,7 @@ import argparse
 import torch.multiprocessing as mp
 import torch
 import torch.distributed as dist
+from torch.distributed.fsdp import (FullyShardedDataParallel, CPUOffload,)
 
 # from datasets import load_dataset
 
@@ -114,12 +115,15 @@ def train(gpu, args):
     torch.cuda.set_device(gpu)
     model.cuda(gpu)
 
-    # loss function
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-
 ############################
 
     model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu], find_unused_parameters=True)
+
+    ### Sharding
+    model = FullyShardedDataParallel(model, cpu_offload=CPUOffload(offload_params=True))
+
+    # loss function
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
 ############################
 
