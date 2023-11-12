@@ -3,10 +3,16 @@ from torch.nn import functional as F
 import tiktoken
 from torch.utils.data import Dataset
 import re
+import os
 from datetime import datetime
 import argparse
+import torch.multiprocessing as mp
 import torch
+import torch.distributed as dist
 
+# from datasets import load_dataset
+
+# dataset_train = load_dataset("bookcorpus", split='train')
 
 learning_rate = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -37,9 +43,18 @@ encode = lambda s: enc.encode(s)
 decode = lambda l: enc.decode(l)
 
 
+# encoded_data = torch.tensor(data, dtype=torch.long)
+
+# train and validation split
+# data = torch.tensor(data, dtype=torch.long)
+
+
 class CustomTextDataset(Dataset):
     def __init__(self, text):
         self.data = torch.tensor(encode(text), dtype=torch.long)
+
+        #         print(self.data.shape, self.data.dtype)
+        #         print(self.data[:100])
 
         n = int(0.9 * len(self.data))
 
@@ -80,12 +95,21 @@ def main():
     parser.add_argument('--epochs', default=2, type=int, metavar='N',
                         help='number of total epochs to run')
     args = parser.parse_args()
-    train(0, args)
+
+    args.world_size = args.gpus * args.nodes
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '8889'
+    mp.spawn(train, nprocs=args.gpus, args=(args,))
 
 
 def train(gpu, args):
 
+############################
 
+    rank = args.nr * args.gpus + gpu
+    dist.init_process_group(backend='nccl', init_method='env://', world_size = args.world_size, rank=rank)
+
+############################
     model = BigramLanguageModel()
     torch.cuda.set_device(gpu)
     model.cuda(gpu)
@@ -93,10 +117,24 @@ def train(gpu, args):
     # loss function
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
+############################
+
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu], find_unused_parameters=True)
+
+############################
+
+
     train_dataset = CustomTextDataset(text)
 
+
+############################
+
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=args.world_size, rank=rank)
+
+############################
+
     train_loader = torch.utils.data.DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=False,
-                                               num_workers=0, pin_memory=True)
+                                               num_workers=0, pin_memory=True, sampler=train_sampler)
 
     start = datetime.now()
 
