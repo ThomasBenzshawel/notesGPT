@@ -80,7 +80,7 @@ class CustomTextDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        return self.get_batch("train", "text")
+        return self.get_batch("train")
 
 
 def main():
