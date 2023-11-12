@@ -156,6 +156,7 @@ def train(gpu, args):
 
     if gpu == 0:
         print('Training Complete in:', str(datetime.now() - start))
+        torch.save(model, model_name)
 
 
 class Head(nn.Module):
